@@ -1,33 +1,33 @@
 "use client";
 
 import { useState } from "react";
+import Camera, { CardTile } from "./Camera";
+import { Card, detect } from "./detector";
 
-export default function Page() {
+function Upload() {
   const [imgUrl, setImgUrl] = useState<string | null>(null);
+  const [cards, setCards] = useState<Card[] | null>(null);
   const [output, setOutput] = useState<string>("");
 
   const handleFile = async (file: File) => {
-    setImgUrl(URL.createObjectURL(file));
+    const url = URL.createObjectURL(file);
+    setImgUrl(url);
+    setCards(null);
     setOutput("detecting…");
-
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result as string);
-      r.onerror = () => reject(r.error);
-      r.readAsDataURL(file);
-    });
-
-    const res = await fetch("/api/detect", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ image: dataUrl }),
-    });
-    const data = await res.json();
-    setOutput(JSON.stringify(data.cards ?? data, null, 2));
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      const { cards } = await detect(img, img.naturalWidth, img.naturalHeight);
+      setCards(cards);
+      setOutput(JSON.stringify(cards, null, 2));
+    } catch (e) {
+      setOutput(`error: ${(e as Error).message}`);
+    }
   };
 
   return (
-    <main>
+    <div className="upload">
       <label
         className="drop"
         onDragOver={(e) => e.preventDefault()}
@@ -37,6 +37,7 @@ export default function Page() {
           if (f) handleFile(f);
         }}
       >
+        drop an image or click to choose
         <input
           type="file"
           accept="image/*"
@@ -48,7 +49,30 @@ export default function Page() {
       </label>
 
       {imgUrl && <img src={imgUrl} alt="" />}
+      {cards && (
+        <div className="cards">
+          {cards.map((c, i) => <CardTile key={`${c.raw}-${i}`} card={c} />)}
+        </div>
+      )}
       {output && <pre>{output}</pre>}
+    </div>
+  );
+}
+
+export default function Page() {
+  const [mode, setMode] = useState<"camera" | "upload">("camera");
+
+  return (
+    <main>
+      <nav className="tabs">
+        <button className={mode === "camera" ? "on" : ""} onClick={() => setMode("camera")}>
+          live camera
+        </button>
+        <button className={mode === "upload" ? "on" : ""} onClick={() => setMode("upload")}>
+          upload image
+        </button>
+      </nav>
+      {mode === "camera" ? <Camera /> : <Upload />}
     </main>
   );
 }

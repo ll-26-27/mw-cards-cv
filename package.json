@@ -5,10 +5,13 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "postinstall": "node scripts/setup.mjs",
+    "setup": "node scripts/setup.mjs"
   },
   "dependencies": {
     "next": "15.0.3",
+    "onnxruntime-web": "1.31.1",
     "react": "19.0.0-rc-66855b96-20241106",
     "react-dom": "19.0.0-rc-66855b96-20241106"
   },
