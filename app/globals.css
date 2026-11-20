@@ -70,6 +70,16 @@ button:disabled { opacity: 0.4; cursor: default; }
   margin-bottom: 16px;
 }
 .controls label { display: flex; gap: 6px; align-items: center; color: #8a96a8; }
+.controls input.feed {
+  font: inherit;
+  color: #e7ebf0;
+  background: #161b23;
+  border: 1px solid #2a3340;
+  border-radius: 8px;
+  padding: 8px 12px;
+  width: 140px;
+}
+.controls input.feed:disabled { opacity: 0.6; }
 
 .live {
   display: grid;
@@ -116,6 +126,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .hand h2 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: #8a96a8; text-transform: uppercase; letter-spacing: 0.05em; }
 .status { margin: 0 0 12px; font-size: 13px; color: #8a96a8; }
+.status.error { color: #ff7b7b; }
 .empty { color: #5a6578; font-size: 13px; }
 
 .cards {

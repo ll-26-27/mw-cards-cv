@@ -2,8 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, Pred, detect, loadDetector } from "./detector";
+import type { PublishedCard } from "./lib/hub";
+import { Stabilizer } from "./stable";
 
 const DEVICE_KEY = "cards-cv:cameraId";
+// While detecting, the feed re-posts at least this often so the server knows it is alive.
+const HEARTBEAT_MS = 2000;
 
 const SUIT_SYMBOL: Record<string, string> = {
   clubs: "♣", diamonds: "♦", hearts: "♥", spades: "♠",
@@ -36,6 +40,56 @@ export default function Camera() {
   const [rawJson, setRawJson] = useState("");
   const [status, setStatus] = useState("");
 
+  // The name this camera publishes under. Each camera gets its own window with its own
+  // name (open /?feed=dealer, /?feed=player-1, ...); the overlay app groups cards by it.
+  const [feed, setFeed] = useState("table");
+  const feedRef = useRef(feed);
+  feedRef.current = feed;
+  const [onAir, setOnAir] = useState<PublishedCard[]>([]);
+  const [publishError, setPublishError] = useState("");
+  const stabilizer = useRef(new Stabilizer());
+  const lastSent = useRef({ signature: "", at: 0 });
+
+  useEffect(() => {
+    const named = new URLSearchParams(window.location.search).get("feed")?.trim();
+    if (named) setFeed(named);
+  }, []);
+
+  const renameFeed = (name: string) => {
+    if (runningRef.current) return;
+    setFeed(name);
+    const url = new URL(window.location.href);
+    url.searchParams.set("feed", name);
+    window.history.replaceState(null, "", url);
+  };
+
+  const publish = async (cards: PublishedCard[]) => {
+    const signature = cards.map((c) => c.code).join(",");
+    const now = Date.now();
+    if (signature === lastSent.current.signature && now - lastSent.current.at < HEARTBEAT_MS) return;
+    lastSent.current = { signature, at: now };
+    setOnAir(cards);
+    try {
+      const res = await fetch("/api/cards", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ feed: feedRef.current.trim() || "table", cards }),
+      });
+      if (!res.ok) throw new Error(`publish failed: ${res.status}`);
+      setPublishError("");
+    } catch (e) {
+      setPublishError((e as Error).message);
+    }
+  };
+
+  const unpublish = () => {
+    stabilizer.current.reset();
+    lastSent.current = { signature: "", at: 0 };
+    setOnAir([]);
+    const name = encodeURIComponent(feedRef.current.trim() || "table");
+    fetch(`/api/cards?feed=${name}`, { method: "DELETE", keepalive: true }).catch(() => {});
+  };
+
   // Labels are only populated after camera permission is granted, so ask once up front.
   const refreshDevices = useCallback(async () => {
     try {
@@ -50,7 +104,7 @@ export default function Camera() {
     setDevices(cams);
     let saved = "";
     try {
-      saved = localStorage.getItem(DEVICE_KEY) ?? "";
+      saved = localStorage.getItem(`${DEVICE_KEY}:${feedRef.current}`) ?? localStorage.getItem(DEVICE_KEY) ?? "";
     } catch {}
     setDeviceId((cur) =>
       cams.some((c) => c.deviceId === cur)
@@ -78,6 +132,7 @@ export default function Camera() {
     if (!deviceId) return;
     try {
       localStorage.setItem(DEVICE_KEY, deviceId);
+      localStorage.setItem(`${DEVICE_KEY}:${feedRef.current}`, deviceId);
     } catch {}
     let cancelled = false;
     (async () => {
@@ -141,7 +196,9 @@ export default function Camera() {
     }
   };
 
-  const detectFrame = async () => {
+  // `trust` publishes this one frame as it stands (snapshot, or a slow interval where waiting
+  // several frames would take seconds); otherwise cards are steadied across frames first.
+  const detectFrame = async (trust = false, live = false) => {
     const video = videoRef.current;
     if (!video || !video.videoWidth) return;
     const t0 = performance.now();
@@ -151,19 +208,30 @@ export default function Camera() {
     setCards(cards);
     setRawJson(JSON.stringify(cards, null, 2));
     drawBoxes(preds);
+    // Stop was pressed while this frame was in the model; the feed is already cleared.
+    if (live && !runningRef.current) return;
+    const stable = trust
+      ? stabilizer.current.update(preds, video.videoWidth, video.videoHeight, 1, 1)
+      : stabilizer.current.update(preds, video.videoWidth, video.videoHeight);
+    await publish(stable);
   };
 
   // One detection at a time; wait intervalMs between the end of one and the next.
   const loop = async () => {
     while (runningRef.current) {
       try {
-        await detectFrame();
+        await detectFrame(intervalMsRef.current >= 500, true);
       } catch (e) {
         setStatus((e as Error).message);
       }
-      // Always yield at least a frame so the video and UI stay smooth.
+      // Always yield at least a frame so the video and UI stay smooth. A hidden window gets
+      // no animation frames, so fall back to a timer there and keep detecting.
       await new Promise((r) =>
-        intervalMsRef.current ? setTimeout(r, intervalMsRef.current) : requestAnimationFrame(r),
+        intervalMsRef.current
+          ? setTimeout(r, intervalMsRef.current)
+          : document.hidden
+            ? setTimeout(r, 0)
+            : requestAnimationFrame(r),
       );
     }
   };
@@ -179,6 +247,7 @@ export default function Camera() {
   const stop = () => {
     runningRef.current = false;
     setRunning(false);
+    unpublish();
   };
 
   return (
@@ -209,9 +278,19 @@ export default function Camera() {
             start detecting
           </button>
         )}
-        <button onClick={() => detectFrame().catch((e) => setStatus(e.message))} disabled={running}>
+        <button onClick={() => detectFrame(true).catch((e) => setStatus(e.message))} disabled={running}>
           snapshot
         </button>
+        <label>
+          feed
+          <input
+            className="feed"
+            value={feed}
+            disabled={running}
+            onChange={(e) => renameFeed(e.target.value)}
+            spellCheck={false}
+          />
+        </label>
       </div>
 
       <div className="live">
@@ -231,6 +310,11 @@ export default function Camera() {
               cards.map((c, i) => <CardTile key={`${c.raw}-${i}`} card={c} />)
             )}
           </div>
+          <p className="status">
+            sent to overlay as “{feed.trim() || "table"}”:{" "}
+            {onAir.length ? onAir.map((c) => c.code).join(" ") : "nothing"}
+          </p>
+          {publishError && <p className="status error">{publishError}</p>}
           {rawJson && (
             <details>
               <summary>json</summary>
